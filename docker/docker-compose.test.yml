@@ -1,0 +1,56 @@
+name: libretranslate-php
+
+services:
+  phpunit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    working_dir: /app
+    volumes:
+      # Mount project root (excludes vendor — see named volume below)
+      - ..:/app
+      # Named volume keeps vendor across container restarts for faster test runs.
+      # Run 'docker compose -f docker/docker-compose.test.yml down -v' to reset it.
+      - vendor:/app/vendor
+      # Cache composer downloads to speed up dependency resolution
+      - composer-cache:/root/.composer/cache
+    environment:
+      - COMPOSER_ALLOW_SUPERUSER=1
+    # Install deps (no-op when vendor/ is already up-to-date) then run PHPUnit.
+    # Args after '--' are forwarded: e.g. --filter, --stop-on-failure
+    entrypoint:
+      - sh
+      - -c
+      - |
+        composer install --no-interaction --prefer-dist --optimize-autoloader
+        exec vendor/bin/phpunit "$$@"
+      - --
+    command: []
+
+  benchmark:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - vendor:/app/vendor
+      - composer-cache:/root/.composer/cache
+    environment:
+      - COMPOSER_ALLOW_SUPERUSER=1
+    # Allow the container to reach services running on the Docker host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Install deps then run benchmark.php, forwarding all CLI args.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        composer install --no-interaction --prefer-dist --optimize-autoloader --quiet
+        exec php benchmark/benchmark.php "$$@"
+      - --
+    command: []
+
+volumes:
+  vendor:
+  composer-cache:

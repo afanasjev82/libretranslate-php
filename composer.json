@@ -1,0 +1,49 @@
+{
+  "name": "afanasjev82/libretranslate-php",
+  "description": "PHP client for LibreTranslate / LTEngine API with sync and async support",
+  "type": "library",
+  "license": "GPL-3.0-or-later",
+  "version": "1.0.0",
+  "keywords": [
+    "libretranslate",
+    "ltengine",
+    "translate",
+    "translation",
+    "async",
+    "php"
+  ],
+  "minimum-stability": "stable",
+  "autoload": {
+    "psr-4": {
+      "Afanasjev82\\LibretranslatePhp\\": "src/"
+    }
+  },
+  "authors": [
+    {
+      "name": "Jeffrey Shilt",
+      "email": "dev@fortytwo-it.com",
+      "homepage": "https://fortytwo-it.com"
+    },
+    {
+      "name": "Dmitri Afanasjev",
+      "email": "adimas@gmail.com",
+      "homepage": "https://github.com/afanasjev82"
+    }
+  ],
+  "require": {
+    "php": "^8.2",
+    "guzzlehttp/guzzle": "^7.0",
+    "guzzlehttp/promises": "^2.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.0"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Afanasjev82\\LibretranslatePhp\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit"
+  }
+}

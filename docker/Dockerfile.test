@@ -1,0 +1,20 @@
+FROM php:8.2-cli-alpine
+
+# PHPUnit 10 requires: dom, json, libxml, mbstring, tokenizer, xml, xmlwriter
+# All are built-in on official PHP images except mbstring.
+# Guzzle requires: curl, openssl — both built-in on official PHP images.
+#
+# mbstring on Alpine requires oniguruma headers to compile.
+# Use a virtual build group so headers are removed after compilation
+# while the runtime library (oniguruma) stays in the final image.
+RUN apk add --no-cache --virtual .build-deps oniguruma-dev \
+    && docker-php-ext-install mbstring \
+    && apk del .build-deps \
+    && apk add --no-cache git unzip oniguruma
+
+# Composer — multi-stage copy from official image
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+ENV COMPOSER_ALLOW_SUPERUSER=1
+
+WORKDIR /app

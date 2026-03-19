@@ -1,0 +1,25 @@
+# Dependencies
+/vendor/
+
+# Composer
+composer.phar
+# Library lock file — consumers resolve their own dependencies
+# https://getcomposer.org/doc/02-libraries.md#lock-file
+composer.lock
+
+# PHPUnit
+.phpunit.result.cache
+.phpunit.cache/
+
+# IDE
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project
+/private/
