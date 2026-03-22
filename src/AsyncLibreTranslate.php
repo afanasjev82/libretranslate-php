@@ -96,6 +96,21 @@ class AsyncLibreTranslate extends LibreTranslate
      */
     public function translateBatch(array $items): array
     {
+        return $this->resolveAsyncBatch($this->startAsyncBatch($items));
+    }
+
+    /**
+     * Start a batch of translations without blocking (fire-and-forget)
+     *
+     * Returns an array of unresolved promises keyed by original index.
+     * Use resolveAsyncBatch() to collect results when ready. This enables
+     * pipelining: dispatch batch N+1 while saving batch N results to DB.
+     *
+     * @param array<int, array{text: string, source?: string, target?: string, format?: string}> $items
+     * @return array<int, PromiseInterface> Unresolved promises keyed by index
+     */
+    public function startAsyncBatch(array $items): array
+    {
         if (empty($items)) {
             return [];
         }
@@ -110,10 +125,26 @@ class AsyncLibreTranslate extends LibreTranslate
             );
         }
 
-        # Fire all requests concurrently and wait for all to complete
-        $results = Utils::unwrap($promises);
+        return $promises;
+    }
 
-        # Ensure results are returned in original order
+    /**
+     * Resolve a batch of promises started by startAsyncBatch()
+     *
+     * Blocks until all promises in the batch are resolved and returns
+     * results in the original order.
+     *
+     * @param array<int, PromiseInterface> $promises Promises from startAsyncBatch()
+     * @return array<int, string|array<string>|null> Results in the same order
+     * @throws RuntimeException If any request fails
+     */
+    public function resolveAsyncBatch(array $promises): array
+    {
+        if (empty($promises)) {
+            return [];
+        }
+
+        $results = Utils::unwrap($promises);
         \ksort($results);
 
         return $results;

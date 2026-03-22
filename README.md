@@ -121,6 +121,48 @@ $result = $promise->wait(); # Block when ready
 echo $result; # "Tere maailm"
 ```
 
+### Pipelined batch (overlap DB writes with HTTP requests)
+
+`startAsyncBatch()` fires all requests without blocking. `resolveAsyncBatch()` blocks when you need the results. Use them together to keep vLLM busy while you write the previous batch to the database:
+
+```php
+$batches = array_chunk($items, 20);
+$pendingPromises = null;
+$pendingBatch    = null;
+
+foreach ($batches as $batch) {
+    $batchItems = array_map(fn($item) => [
+        "text"   => $item["text"],
+        "source" => "auto",
+        "target" => $item["lang"],
+    ], $batch);
+
+    # Dispatch next batch — non-blocking, requests fire immediately
+    $newPromises = $translator->startAsyncBatch($batchItems);
+
+    # Save previous batch to DB while new requests are in flight
+    if ($pendingPromises !== null) {
+        $results = $translator->resolveAsyncBatch($pendingPromises);
+        foreach ($pendingBatch as $index => $item) {
+            $db->save($item["id"], $results[$index]);
+        }
+    }
+
+    $pendingPromises = $newPromises;
+    $pendingBatch    = $batch;
+}
+
+# Drain the final batch
+if ($pendingPromises !== null) {
+    $results = $translator->resolveAsyncBatch($pendingPromises);
+    foreach ($pendingBatch as $index => $item) {
+        $db->save($item["id"], $results[$index]);
+    }
+}
+```
+
+This eliminates the idle gap between batches — vLLM sees a continuous stream of requests instead of burst → pause → burst.
+
 ### Async detect batch
 
 ```php
@@ -154,7 +196,7 @@ Validates every response: checks `translatedText` field is present, non-empty, a
 
 On Linux/macOS with the `pcntl` extension, Ctrl+C triggers graceful shutdown with partial results.
 
-### Usage
+### Usage (benchmark.php)
 
 ```bash
 # Sync mode (sequential requests)
@@ -217,7 +259,7 @@ src/
 ```
 
 - `LibreTranslate` — synchronous client compatible with both LibreTranslate and LTEngine APIs
-- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, and `detectBatch()` methods using `GuzzleHttp\Promise\Utils::unwrap()`
+- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, `detectBatch()`, `startAsyncBatch()`, and `resolveAsyncBatch()` methods using `GuzzleHttp\Promise\Utils::unwrap()`; the `start`/`resolve` split enables pipelining (overlap DB writes with HTTP dispatch)
 
 ## LTEngine API
 

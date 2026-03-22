@@ -384,4 +384,105 @@ final class AsyncLibreTranslateTest extends TestCase
             );
         }
     }
+
+    # ──────────────────────────────────────────────
+    # startAsyncBatch() / resolveAsyncBatch()
+    # ──────────────────────────────────────────────
+
+    public function testStartAsyncBatchReturnsPromises(): void
+    {
+        $translator = $this->makeTranslator([
+            $this->jsonResponse(["translatedText" => "Tere"]),
+            $this->jsonResponse(["translatedText" => "Привет"]),
+        ]);
+
+        $promises = $translator->startAsyncBatch([
+            ["text" => "Hello", "source" => "en", "target" => "et"],
+            ["text" => "Hello", "source" => "en", "target" => "ru"],
+        ]);
+
+        $this->assertCount(2, $promises);
+        foreach ($promises as $p) {
+            $this->assertInstanceOf(PromiseInterface::class, $p);
+        }
+    }
+
+    public function testStartAsyncBatchEmptyReturnsEmpty(): void
+    {
+        $translator = $this->makeTranslator([]);
+        $this->assertSame([], $translator->startAsyncBatch([]));
+    }
+
+    public function testResolveAsyncBatchEmptyReturnsEmpty(): void
+    {
+        $translator = $this->makeTranslator([]);
+        $this->assertSame([], $translator->resolveAsyncBatch([]));
+    }
+
+    public function testResolveAsyncBatchCollectsResults(): void
+    {
+        $translator = $this->makeTranslator([
+            $this->jsonResponse(["translatedText" => "Tere"]),
+            $this->jsonResponse(["translatedText" => "Привет"]),
+            $this->jsonResponse(["translatedText" => "Hallo"]),
+        ]);
+
+        $promises = $translator->startAsyncBatch([
+            ["text" => "Hello", "source" => "en", "target" => "et"],
+            ["text" => "Hello", "source" => "en", "target" => "ru"],
+            ["text" => "Hello", "source" => "en", "target" => "de"],
+        ]);
+
+        $results = $translator->resolveAsyncBatch($promises);
+
+        $this->assertCount(3, $results);
+        $this->assertSame("Tere", $results[0]);
+        $this->assertSame("Привет", $results[1]);
+        $this->assertSame("Hallo", $results[2]);
+    }
+
+    public function testStartThenResolveEqualsTranslateBatch(): void
+    {
+        # Same responses for two separate translators (one using translateBatch, one using start+resolve)
+        $makeResponses = fn() => [
+            $this->jsonResponse(["translatedText" => "Tere"]),
+            $this->jsonResponse(["translatedText" => "Привет"]),
+        ];
+
+        $items = [
+            ["text" => "Hello", "source" => "en", "target" => "et"],
+            ["text" => "Hello", "source" => "en", "target" => "ru"],
+        ];
+
+        $batchTranslator = $this->makeTranslator($makeResponses());
+        $batchResults = $batchTranslator->translateBatch($items);
+
+        $splitTranslator = $this->makeTranslator($makeResponses());
+        $promises = $splitTranslator->startAsyncBatch($items);
+        $splitResults = $splitTranslator->resolveAsyncBatch($promises);
+
+        $this->assertSame($batchResults, $splitResults);
+    }
+
+    public function testStartAsyncBatchPreservesKeys(): void
+    {
+        $translator = $this->makeTranslator([
+            $this->jsonResponse(["translatedText" => "A"]),
+            $this->jsonResponse(["translatedText" => "B"]),
+        ]);
+
+        # Use explicit non-sequential keys
+        $items = [
+            5 => ["text" => "One", "source" => "en", "target" => "et"],
+            9 => ["text" => "Two", "source" => "en", "target" => "ru"],
+        ];
+
+        $promises = $translator->startAsyncBatch($items);
+        $this->assertArrayHasKey(5, $promises);
+        $this->assertArrayHasKey(9, $promises);
+
+        $results = $translator->resolveAsyncBatch($promises);
+        $this->assertSame("A", $results[5]);
+        $this->assertSame("B", $results[9]);
+    }
 }
