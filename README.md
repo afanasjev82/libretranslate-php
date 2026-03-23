@@ -21,6 +21,8 @@ Additional changes:
 
 - PHP 8.2+ with strict types, typed properties, union types
 - Dual authentication: API key parameter + Authorization header (Basic/Bearer)
+- Format auto-detection: `"html"` or `"text"` inferred per-call from text content, overridable via constructor, `setFormat()`, or per-call parameter
+- Async batch translation: `translateBatch()`, `translateMultiTarget()`, `startAsyncBatch()` / `resolveAsyncBatch()` for pipelined throughput
 - Removed `ltmanage` functionality (not relevant for remote API usage)
 - Removed `translateFiles()` and `suggest()` (not supported by LTEngine)
 
@@ -51,9 +53,12 @@ $translator->setApiKey("your-api-key");
 # Or with Authorization header (Basic/Bearer)
 $translator->setAuth("Basic", "base64encodedcredentials");
 
-# Translate
+# Translate (format auto-detected: "<p>..." → html, plain text → text)
 $result = $translator->translate("Hello world", "en", "et");
 echo $result; # "Tere maailm"
+
+# Translate an HTML snippet — format auto-detected as "html"
+$result = $translator->translate("<p>Hello</p>", "en", "et");
 
 # Translate with default languages
 $translator->setLanguages("en", "et");
@@ -70,6 +75,28 @@ $languages = $translator->languages();
 # Get server settings
 $settings = $translator->settings();
 ```
+
+### Format control
+
+All translate methods auto-detect the content format from the text: an HTML opening tag anywhere in the string triggers `"html"`, everything else is `"text"`. Override at any level:
+
+```php
+# Set a project-wide default (overrides auto-detect for every call)
+$translator->setFormat("html");
+
+# Per-call override (highest priority — overrides both default and auto-detect)
+$translator->translate("<p>Hello</p>", "en", "et", "text");
+
+# Via constructor — 6th argument, after guzzleOptions
+$translator = new LibreTranslate("https://your-server.com", 9453, "en", "et", [], "html");
+
+# Reset to auto-detect
+$translator->setFormat(null);
+```
+
+Priority chain: **explicit call param** → **`setFormat()` default** → **auto-detect from text**
+
+Auto-detection adds a single regex match per call — negligible overhead (microseconds) compared to HTTP roundtrip time.
 
 ### Async multi-target (one text → many languages)
 
@@ -180,11 +207,14 @@ $detections = $translator->detectBatch([
 $translator = new LibreTranslate(
     host: "https://your-server.com",
     port: 9453,
+    source: "en",
+    target: "et",
     guzzleOptions: [
         "timeout" => 300,
         "connect_timeout" => 5,
         "verify" => true,
     ],
+    format: "html",  # optional default format (null = auto-detect)
 );
 ```
 
@@ -258,8 +288,8 @@ src/
     └── TranslationValidator.php    # Response validation (4-step check)
 ```
 
-- `LibreTranslate` — synchronous client compatible with both LibreTranslate and LTEngine APIs
-- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, `detectBatch()`, `startAsyncBatch()`, and `resolveAsyncBatch()` methods using `GuzzleHttp\Promise\Utils::unwrap()`; the `start`/`resolve` split enables pipelining (overlap DB writes with HTTP dispatch)
+- `LibreTranslate` — synchronous client compatible with both LibreTranslate and LTEngine APIs; format auto-detected per-call via regex, overridable via constructor, `setFormat()`, or per-call parameter
+- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, `detectBatch()`, `startAsyncBatch()`, and `resolveAsyncBatch()` methods using `GuzzleHttp\Promise\Utils::unwrap()`; the `start`/`resolve` split enables pipelining (overlap DB writes with HTTP dispatch); format resolution applies to all async paths
 
 ## LTEngine API
 

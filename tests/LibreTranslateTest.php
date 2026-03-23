@@ -359,4 +359,141 @@ final class LibreTranslateTest extends TestCase
         $this->assertSame("ru", $body["source"]);
         $this->assertSame("lt", $body["target"]);
     }
+
+    # ──────────────────────────────────────────────
+    # Format auto-detection and defaults
+    # ──────────────────────────────────────────────
+
+    public function testAutoDetectsSendsTextFormatForPlainText(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere maailm"])],
+            $history,
+        );
+
+        $translator->translate("Hello world", "en", "et");
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("text", $body["format"]);
+    }
+
+    public function testAutoDetectsSendsHtmlFormatForHtmlContent(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "<p>Tere</p>"])],
+            $history,
+        );
+
+        $translator->translate("<p>Hello world</p>", "en", "et");
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testSetFormatOverridesAutoDetection(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+        $translator->setFormat("html");
+
+        # Plain text, but default format is "html" — should send html
+        $translator->translate("Hello world", "en", "et");
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testExplicitFormatOverridesDefault(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+        $translator->setFormat("html");
+
+        # Default is html, but explicit "text" should win
+        $translator->translate("Hello world", "en", "et", "text");
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("text", $body["format"]);
+    }
+
+    public function testConstructorFormatParameter(): void
+    {
+        $history = [];
+        $mock = new MockHandler([
+            $this->jsonResponse(["translatedText" => "Tere"]),
+        ]);
+        $stack = HandlerStack::create($mock);
+        $stack->push(Middleware::history($history));
+
+        # Set format="html" via constructor (6th arg after guzzleOptions)
+        $translator = new LibreTranslate("http://localhost", null, "en", "et", [
+            "handler" => $stack,
+        ], "html");
+
+        $translator->translate("Plain text");
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testSetFormatReturnsSelf(): void
+    {
+        $translator = $this->makeTranslator([]);
+        $this->assertSame($translator, $translator->setFormat("text"));
+    }
+
+    public function testAutoDetectsVariousHtmlTags(): void
+    {
+        $htmlTexts = [
+            '<div>content</div>',
+            '<br/>line break',
+            '<img src="photo.jpg">',
+            '<table><tr><td>cell</td></tr></table>',
+            'Text with <strong>bold</strong> word',
+        ];
+
+        foreach ($htmlTexts as $html) {
+            $history = [];
+            $translator = $this->makeTranslator(
+                [$this->jsonResponse(["translatedText" => "result"])],
+                $history,
+            );
+
+            $translator->translate($html, "en", "et");
+
+            $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+            $this->assertSame("html", $body["format"], "Failed auto-detecting HTML for: $html");
+        }
+    }
+
+    public function testAutoDetectsPlainTextVariants(): void
+    {
+        $plainTexts = [
+            'Hello world',
+            'Price is 5 > 3 euros',
+            'Use a < b comparison',
+            '',
+        ];
+
+        foreach ($plainTexts as $text) {
+            $history = [];
+            $translator = $this->makeTranslator(
+                [$this->jsonResponse(["translatedText" => "result"])],
+                $history,
+            );
+
+            $translator->translate($text, "en", "et");
+
+            $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+            $this->assertSame("text", $body["format"], "Failed auto-detecting text for: $text");
+        }
+    }
 }

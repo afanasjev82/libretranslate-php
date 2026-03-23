@@ -29,14 +29,14 @@ class AsyncLibreTranslate extends LibreTranslate
      * @param string|array<string> $text Text or array of texts to translate
      * @param string|null $source Source language (null = use default)
      * @param string|null $target Target language (null = use default)
-     * @param string $format Content format: "text" or "html" (default: "text")
+     * @param string|null $format Content format: "text", "html", or null for auto-detect
      * @return PromiseInterface Resolves to string|array<string>|null
      */
     public function translateAsync(
         string|array $text,
         ?string $source = null,
         ?string $target = null,
-        string $format = "text",
+        ?string $format = null,
     ): PromiseInterface {
         $payload = $this->buildTranslatePayload(
             $text,
@@ -121,7 +121,7 @@ class AsyncLibreTranslate extends LibreTranslate
                 $item["text"],
                 $item["source"] ?? null,
                 $item["target"] ?? null,
-                $item["format"] ?? "text",
+                $item["format"] ?? null,
             );
         }
 
@@ -164,14 +164,14 @@ class AsyncLibreTranslate extends LibreTranslate
      * @param string $text Text to translate
      * @param array<int, string> $targets Target language codes (e.g. ["en", "et", "ru"])
      * @param string|null $source Source language (null = use default)
-     * @param string $format Content format: "text" or "html" (default: "text")
+     * @param string|null $format Content format: "text", "html", or null for auto-detect
      * @return array<string, string|null> Results keyed by language code
      */
     public function translateMultiTarget(
         string $text,
         array $targets,
         ?string $source = null,
-        string $format = "text",
+        ?string $format = null,
     ): array {
         if (empty($targets)) {
             return [];

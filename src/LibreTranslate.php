@@ -52,6 +52,9 @@ class LibreTranslate
     /** @var string|null Authorization header credentials */
     protected ?string $authCredentials = null;
 
+    /** @var string|null Default content format ("text", "html", or null for auto-detect) */
+    protected ?string $defaultFormat = null;
+
     /** @var Client Guzzle HTTP client instance */
     protected Client $client;
 
@@ -66,6 +69,7 @@ class LibreTranslate
      * @param string|null $source Default source language code
      * @param string|null $target Default target language code
      * @param array<string, mixed> $guzzleOptions Additional Guzzle client options
+     * @param string|null $format Default content format ("text", "html", or null for auto-detect)
      */
     public function __construct(
         string $host = "http://localhost",
@@ -73,9 +77,11 @@ class LibreTranslate
         ?string $source = null,
         ?string $target = null,
         array $guzzleOptions = [],
+        ?string $format = null,
     ) {
         $this->apiBase = \rtrim($host, "/\\");
         $this->apiPort = $port;
+        $this->defaultFormat = $format;
 
         if ($source !== null) {
             $this->sourceLanguage = $source;
@@ -144,6 +150,21 @@ class LibreTranslate
     {
         $this->authType = $type;
         $this->authCredentials = $credentials;
+        return $this;
+    }
+
+    /**
+     * Set the default content format for translations
+     *
+     * When set, this format is used unless overridden per-call.
+     * When null, format is auto-detected from the text content.
+     *
+     * @param string|null $format "text", "html", or null for auto-detect
+     * @return static
+     */
+    public function setFormat(?string $format): static
+    {
+        $this->defaultFormat = $format;
         return $this;
     }
 
@@ -267,7 +288,7 @@ class LibreTranslate
      * @param string|array<string> $text Text or array of texts to translate
      * @param string|null $source Source language (null = use default)
      * @param string|null $target Target language (null = use default)
-     * @param string $format Content format: "text" or "html" (default: "html")
+     * @param string|null $format Content format: "text", "html", or null for auto-detect
      * @return string|array<string>|null Translated text, array of translations, or null on failure
      * @throws RuntimeException On request failure or API error
      */
@@ -275,11 +296,11 @@ class LibreTranslate
         string|array $text,
         ?string $source = null,
         ?string $target = null,
-        string $format = "html",
+        ?string $format = null,
     ): string|array|null {
         $data = [
             "q" => $text,
-            "format" => $format,
+            "format" => $this->resolveFormat($format, $text),
             "source" => $source ?? $this->sourceLanguage,
             "target" => $target ?? $this->targetLanguage,
         ];
@@ -324,6 +345,44 @@ class LibreTranslate
     }
 
     # ──────────────────────────────────────────────
+    # Format resolution
+    # ──────────────────────────────────────────────
+
+    /**
+     * Resolve the content format for a translation request
+     *
+     * Priority: explicit parameter → default format → auto-detect from text.
+     *
+     * @param string|null $format Explicit format (null = use default or auto-detect)
+     * @param string|array<string> $text Text content for auto-detection (if needed)
+     * @return string Resolved format: "text" or "html"
+     */
+    protected function resolveFormat(?string $format, string|array $text): string
+    {
+        if ($format !== null) {
+            return $format;
+        }
+        if ($this->defaultFormat !== null) {
+            return $this->defaultFormat;
+        }
+        return static::detectFormat(\is_array($text) ? ($text[0] ?? "") : $text);
+    }
+
+    /**
+     * Auto-detect whether text content is HTML or plain text
+     *
+     * Checks for the presence of HTML opening tags via a single regex match.
+     * Overhead is negligible (microseconds) compared to HTTP roundtrip time.
+     *
+     * @param string $text Text to check
+     * @return string "html" if HTML tags detected, "text" otherwise
+     */
+    protected static function detectFormat(string $text): string
+    {
+        return \preg_match('/<[a-z][a-z0-9]*[\s>\/]/i', $text) === 1 ? "html" : "text";
+    }
+
+    # ──────────────────────────────────────────────
     # HTTP request layer
     # ──────────────────────────────────────────────
 
@@ -352,18 +411,18 @@ class LibreTranslate
      * @param string|array<string> $text Text to translate
      * @param string $source Source language
      * @param string $target Target language
-     * @param string $format Content format
+     * @param string|null $format Content format ("text", "html", or null for auto-detect)
      * @return array<string, mixed>
      */
     public function buildTranslatePayload(
         string|array $text,
         string $source,
         string $target,
-        string $format = "html",
+        ?string $format = null,
     ): array {
         $data = [
             "q" => $text,
-            "format" => $format,
+            "format" => $this->resolveFormat($format, $text),
             "source" => $source,
             "target" => $target,
         ];

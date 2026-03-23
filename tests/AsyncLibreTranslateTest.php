@@ -485,4 +485,124 @@ final class AsyncLibreTranslateTest extends TestCase
         $this->assertSame("A", $results[5]);
         $this->assertSame("B", $results[9]);
     }
+
+    # ──────────────────────────────────────────────
+    # Format auto-detection (async)
+    # ──────────────────────────────────────────────
+
+    public function testAsyncAutoDetectsTextFormat(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+
+        $translator->translateAsync("Hello world", "en", "et")->wait();
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("text", $body["format"]);
+    }
+
+    public function testAsyncAutoDetectsHtmlFormat(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "<p>Tere</p>"])],
+            $history,
+        );
+
+        $translator->translateAsync("<p>Hello</p>", "en", "et")->wait();
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testAsyncSetFormatOverridesAutoDetect(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+        $translator->setFormat("html");
+
+        $translator->translateAsync("Plain text", "en", "et")->wait();
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testAsyncExplicitFormatWins(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+        $translator->setFormat("html");
+
+        # Explicit "text" overrides default "html"
+        $translator->translateAsync("<p>HTML</p>", "en", "et", "text")->wait();
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("text", $body["format"]);
+    }
+
+    public function testBatchAutoDetectsFormatPerItem(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [
+                $this->jsonResponse(["translatedText" => "Tere"]),
+                $this->jsonResponse(["translatedText" => "<p>Tere</p>"]),
+            ],
+            $history,
+        );
+
+        $translator->translateBatch([
+            ["text" => "Plain text", "source" => "en", "target" => "et"],
+            ["text" => "<p>HTML content</p>", "source" => "en", "target" => "et"],
+        ]);
+
+        $body0 = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $body1 = \json_decode($history[1]["request"]->getBody()->getContents(), true);
+        $this->assertSame("text", $body0["format"]);
+        $this->assertSame("html", $body1["format"]);
+    }
+
+    public function testBatchItemExplicitFormatOverridesAutoDetect(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [$this->jsonResponse(["translatedText" => "Tere"])],
+            $history,
+        );
+
+        $translator->translateBatch([
+            ["text" => "Plain text", "source" => "en", "target" => "et", "format" => "html"],
+        ]);
+
+        $body = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body["format"]);
+    }
+
+    public function testMultiTargetAutoDetectsFormat(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [
+                $this->jsonResponse(["translatedText" => "<p>Tere</p>"]),
+                $this->jsonResponse(["translatedText" => "<p>Привет</p>"]),
+            ],
+            $history,
+        );
+
+        $translator->translateMultiTarget("<p>Hello</p>", ["et", "ru"], "en");
+
+        $body0 = \json_decode($history[0]["request"]->getBody()->getContents(), true);
+        $body1 = \json_decode($history[1]["request"]->getBody()->getContents(), true);
+        $this->assertSame("html", $body0["format"]);
+        $this->assertSame("html", $body1["format"]);
+    }
 }
