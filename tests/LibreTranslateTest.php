@@ -245,6 +245,23 @@ final class LibreTranslateTest extends TestCase
         $translator->translate("Hello world", "en", "xx");
     }
 
+    public function testTranslateRetriesOn429UsingRetryAfterHeader(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [
+                new Response(429, ["Content-Type" => "application/json", "Retry-After" => "0"], \json_encode(["error" => "busy"])),
+                $this->jsonResponse(["translatedText" => "Tere maailm"]),
+            ],
+            $history,
+        );
+
+        $result = $translator->translate("Hello world", "en", "et");
+
+        $this->assertSame("Tere maailm", $result);
+        $this->assertCount(2, $history);
+    }
+
     public function testGetErrorIsNullWhenNoError(): void
     {
         $translator = $this->makeTranslator([

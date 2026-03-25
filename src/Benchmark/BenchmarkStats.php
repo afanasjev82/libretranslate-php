@@ -11,7 +11,11 @@ class BenchmarkStats
 	public int $totalRequests = 0;
 	public int $successfulRequests = 0;
 	public int $failedRequests = 0;
+	public int $overloadFailures = 0;
 	public int $validationFailures = 0;
+	public int $retryAttempts = 0;
+	public int $recoveredAfterRetry = 0;
+	public int $failedAfterRetries = 0;
 	public float $totalTime = 0.0;
 	/** @var array<float> */
 	public array $responseTimes = [];
@@ -47,6 +51,14 @@ class BenchmarkStats
 		return $this->totalTime > 0 ? $this->totalRequests / $this->totalTime : 0.0;
 	}
 
+	public function retryEffectiveness(): float
+	{
+		$retryOutcomes = $this->recoveredAfterRetry + $this->failedAfterRetries;
+		return $retryOutcomes > 0
+			? ($this->recoveredAfterRetry / $retryOutcomes) * 100.0
+			: 0.0;
+	}
+
 	public function percentile(float $p): float
 	{
 		if (empty($this->responseTimes)) {
@@ -74,7 +86,12 @@ class BenchmarkStats
 			'workers' => $this->workers,
 			'successful_requests' => $this->successfulRequests,
 			'failed_requests' => $this->failedRequests,
+			'overload_failures' => $this->overloadFailures,
 			'validation_failures' => $this->validationFailures,
+			'retry_attempts' => $this->retryAttempts,
+			'recovered_after_retry' => $this->recoveredAfterRetry,
+			'failed_after_retries' => $this->failedAfterRetries,
+			'retry_effectiveness' => \round($this->retryEffectiveness(), 1),
 			'success_rate' => \round($this->successRate(), 1),
 			'requests_per_second' => \round($this->requestsPerSecond(), 2),
 			'avg_response_time' => \round($this->avgResponseTime(), 3),

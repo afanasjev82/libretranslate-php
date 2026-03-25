@@ -18,6 +18,32 @@ class BenchmarkRunner
 	private array $results = [];
 	private bool $interrupted = false;
 
+	private static function detectHttpStatusCode(?string $message): ?int
+	{
+		if ($message === null) {
+			return null;
+		}
+
+		if (\preg_match('/HTTP\s+(\d{3})/', $message, $matches) === 1) {
+			return (int) $matches[1];
+		}
+
+		return null;
+	}
+
+	private static function isOverloadStatus(?int $statusCode): bool
+	{
+		return $statusCode === 429;
+	}
+
+	private function captureRetryStats(): void
+	{
+		$retryStats = $this->translator->getRetryStats();
+		$this->stats->retryAttempts = $retryStats['retry_attempts'];
+		$this->stats->recoveredAfterRetry = $retryStats['recovered_requests'];
+		$this->stats->failedAfterRetries = $retryStats['failed_after_retries'];
+	}
+
 	public function __construct(
 		private readonly LibreTranslate $translator,
 		private readonly bool $verbose = false,
@@ -136,6 +162,8 @@ class BenchmarkRunner
 					}
 				} catch (\Throwable $e) {
 					$elapsed = \microtime(true) - $start;
+					$statusCode = self::detectHttpStatusCode($e->getMessage()) ?? $this->translator->getLastStatusCode();
+					$overloadFailure = self::isOverloadStatus($statusCode);
 
 					$result = new BenchmarkResult(
 						requestId: $requestId,
@@ -145,8 +173,13 @@ class BenchmarkRunner
 						success: false,
 						responseTime: $elapsed,
 						errorMessage: $e->getMessage(),
+						httpStatusCode: $statusCode,
+						overloadFailure: $overloadFailure,
 					);
 					$this->stats->failedRequests++;
+					if ($overloadFailure) {
+						$this->stats->overloadFailures++;
+					}
 
 					if ($this->verbose) {
 						echo \sprintf("  [#%d] FAIL (%.3fs): %s\n", $requestId, $elapsed, $e->getMessage());
@@ -164,6 +197,7 @@ class BenchmarkRunner
 		}
 
 		$this->stats->totalTime = \microtime(true) - $wallStart;
+		$this->captureRetryStats();
 
 		if ($this->interrupted && $pbar !== null) {
 			$pbar->finish();
@@ -203,7 +237,8 @@ class BenchmarkRunner
 
 		$wallStart = \microtime(true);
 
-		# Build a generator of requests for the Pool
+		# Build a generator of requests for the Pool using the library async path so
+		# retry/backoff behavior matches production usage.
 		$runner = $this;
 		$requests = function () use ($translator, $allTasks, &$timers, $runner) {
 			foreach ($allTasks as $task) {
@@ -217,11 +252,12 @@ class BenchmarkRunner
 				$payload = $translator->buildTranslatePayload($case['text'], $case['source'], $case['target']);
 				$timers[$rid] = \microtime(true);
 
-				yield $rid => function () use ($translator, $payload) {
-					return $translator->getClient()->postAsync('/translate', [
-						'headers' => $translator->buildHeaders(),
-						'json' => $payload,
-					]);
+				yield $rid => function () use ($translator, $case) {
+					return $translator->translateAsync(
+						$case['text'],
+						$case['source'],
+						$case['target'],
+					);
 				};
 			}
 		};
@@ -230,15 +266,13 @@ class BenchmarkRunner
 		$pool = new Pool($translator->getClient(), $requests(), [
 			'concurrency' => $workers,
 
-			'fulfilled' => function (Response $response, int $rid) use ($allTasks, &$timers, $pbar, ) {
+			'fulfilled' => function (mixed $translated, int $rid) use ($allTasks, &$timers, $pbar, ) {
 				$elapsed = \microtime(true) - $timers[$rid];
 				$case = $allTasks[$rid - 1]['case'];
-				$body = $response->getBody()->getContents();
+				$translatedStr = \is_string($translated) ? $translated : \json_encode($translated);
+				$validationError = TranslationValidator::validate($case['text'], $translatedStr);
 
-				# Validate the response
-				$validation = TranslationValidator::validateResponse($case['text'], $body);
-
-				if ($validation['error'] !== null) {
+				if ($validationError !== null) {
 					$result = new BenchmarkResult(
 						requestId: $rid,
 						text: $case['text'],
@@ -246,15 +280,15 @@ class BenchmarkRunner
 						targetLang: $case['target'],
 						success: false,
 						responseTime: $elapsed,
-						translatedText: $validation['translatedText'],
-						errorMessage: $validation['error'],
+						translatedText: $translatedStr,
+						errorMessage: $validationError,
 						validationFailure: true,
 					);
 					$this->stats->failedRequests++;
 					$this->stats->validationFailures++;
 
 					if ($this->verbose) {
-						echo \sprintf("  [#%d] VALIDATION (%.3fs): %s\n", $rid, $elapsed, $validation['error']);
+						echo \sprintf("  [#%d] VALIDATION (%.3fs): %s\n", $rid, $elapsed, $validationError);
 					}
 				} else {
 					$result = new BenchmarkResult(
@@ -264,13 +298,13 @@ class BenchmarkRunner
 						targetLang: $case['target'],
 						success: true,
 						responseTime: $elapsed,
-						translatedText: $validation['translatedText'],
+						translatedText: $translatedStr,
 					);
 					$this->stats->successfulRequests++;
 
 					if ($this->verbose) {
 						$truncText = \mb_substr($case['text'], 0, 50);
-						$truncResult = \mb_substr($validation['translatedText'] ?? '', 0, 50);
+						$truncResult = \mb_substr($translatedStr ?? '', 0, 50);
 						echo \sprintf("  [#%d] OK (%.3fs) '%s' -> '%s'\n", $rid, $elapsed, $truncText, $truncResult);
 					}
 				}
@@ -287,6 +321,8 @@ class BenchmarkRunner
 			'rejected' => function (\Throwable $reason, int $rid) use ($allTasks, &$timers, $pbar, ) {
 				$elapsed = \microtime(true) - $timers[$rid];
 				$case = $allTasks[$rid - 1]['case'];
+				$statusCode = self::detectHttpStatusCode($reason->getMessage());
+				$overloadFailure = self::isOverloadStatus($statusCode);
 
 				$result = new BenchmarkResult(
 					requestId: $rid,
@@ -296,10 +332,15 @@ class BenchmarkRunner
 					success: false,
 					responseTime: $elapsed,
 					errorMessage: $reason->getMessage(),
+					httpStatusCode: $statusCode,
+					overloadFailure: $overloadFailure,
 				);
 
 				$this->stats->totalRequests++;
 				$this->stats->failedRequests++;
+				if ($overloadFailure) {
+					$this->stats->overloadFailures++;
+				}
 				$this->stats->responseTimes[] = $elapsed;
 				$this->results[] = $result;
 
@@ -315,6 +356,7 @@ class BenchmarkRunner
 		$pool->promise()->wait();
 
 		$this->stats->totalTime = \microtime(true) - $wallStart;
+		$this->captureRetryStats();
 
 		if ($this->interrupted && $pbar !== null) {
 			$pbar->finish();

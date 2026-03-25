@@ -127,7 +127,7 @@ class BenchmarkCli
 			'port' => null,
 			'mode' => 'sync',
 			'repeat' => 10,
-			'workers' => 8,
+			'workers' => 4,
 			'source' => 'auto',
 			'target' => 'et',
 			'timeout' => 120,

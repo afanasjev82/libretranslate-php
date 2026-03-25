@@ -122,6 +122,31 @@ final class AsyncLibreTranslateTest extends TestCase
         $translator->translateAsync("Hello world", "en", "xx")->wait();
     }
 
+    public function testTranslateAsyncRetriesOn429UsingRetryAfterHeader(): void
+    {
+        $history = [];
+        $translator = $this->makeTranslator(
+            [
+                new Response(429, ["Content-Type" => "application/json", "Retry-After" => "0"], \json_encode(["error" => "busy"])),
+                $this->jsonResponse(["translatedText" => "Tere maailm"]),
+            ],
+            $history,
+        );
+
+        $result = $translator->translateAsync("Hello world", "en", "et")->wait();
+
+        $this->assertSame("Tere maailm", $result);
+        $this->assertCount(2, $history);
+    }
+
+    public function testCanConfigureMaxConcurrentRequests(): void
+    {
+        $translator = $this->makeTranslator([]);
+
+        $this->assertSame($translator, $translator->setMaxConcurrentRequests(3));
+        $this->assertSame(3, $translator->getMaxConcurrentRequests());
+    }
+
     # ──────────────────────────────────────────────
     # translateBatch()
     # ──────────────────────────────────────────────

@@ -17,6 +17,8 @@ class BenchmarkResult
 		public readonly float $responseTime,
 		public readonly ?string $translatedText = null,
 		public readonly ?string $errorMessage = null,
+		public readonly ?int $httpStatusCode = null,
+		public readonly bool $overloadFailure = false,
 		public readonly bool $validationFailure = false,
 	) {
 	}
@@ -35,6 +37,8 @@ class BenchmarkResult
 			'response_time' => \round($this->responseTime, 4),
 			'translated_text' => $this->translatedText,
 			'error_message' => $this->errorMessage,
+			'http_status_code' => $this->httpStatusCode,
+			'overload_failure' => $this->overloadFailure,
 			'validation_failure' => $this->validationFailure,
 		];
 	}

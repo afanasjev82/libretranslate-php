@@ -6,7 +6,7 @@ Forked from [jefs42/libretranslate](https://github.com/jefs42/libretranslate), r
 
 ## Why async?
 
-When translating the same content into multiple languages (e.g. en, et, ru, lt, lv, fi), sequential requests are slow. LTEngine uses [vLLM](https://docs.vllm.ai/) with **continuous batching** — it processes concurrent requests with near-zero overhead. Async batch mode provides **5-6x performance improvement** compared to one-by-one translation.
+When translating the same content into multiple languages (e.g. en, et, ru, lt, lv, fi), sequential requests are slow. LTEngine uses [vLLM](https://docs.vllm.ai/) with **continuous batching**, but consumer GPUs still need bounded concurrency. This client keeps async batches efficient while respecting server overload signals such as `429 Retry-After`.
 
 ## Changes from jefs42/libretranslate
 
@@ -105,8 +105,10 @@ use Afanasjev82\LibretranslatePhp\AsyncLibreTranslate;
 
 $translator = new AsyncLibreTranslate("https://your-server.com", 9453);
 $translator->setAuth("Basic", "base64encodedcredentials");
+$translator->setMaxConcurrentRequests(4); # Good starting point for a single RTX 3090
+$translator->setRetryPolicy(2, 2);        # Retry transient overloads using Retry-After when present
 
-# Translate one text into 6 languages at once — all requests fired concurrently
+# Translate one text into 6 languages at once — dispatched with bounded concurrency
 $results = $translator->translateMultiTarget(
     "Product description here",
     ["en", "et", "ru", "lt", "lv", "fi"],
@@ -130,7 +132,7 @@ $batch = [
 ];
 
 $results = $translator->translateBatch($batch);
-# All translations returned — vLLM processed them concurrently
+# All translations returned — the client keeps only a bounded number in flight
 
 foreach ($results as $index => $translatedText) {
     echo $batch[$index]["target"] . ": " . $translatedText . "\n";
@@ -150,7 +152,7 @@ echo $result; # "Tere maailm"
 
 ### Pipelined batch (overlap DB writes with HTTP requests)
 
-`startAsyncBatch()` fires all requests without blocking. `resolveAsyncBatch()` blocks when you need the results. Use them together to keep vLLM busy while you write the previous batch to the database:
+`startAsyncBatch()` dispatches requests without blocking, but respects the client's max-concurrency setting so it does not flood LTEngine. `resolveAsyncBatch()` blocks when you need the results. Use them together to keep vLLM busy while you write the previous batch to the database:
 
 ```php
 $batches = array_chunk($items, 20);
@@ -203,7 +205,7 @@ $detections = $translator->detectBatch([
 
 ### Custom Guzzle options
 
-```php
+````php
 $translator = new LibreTranslate(
     host: "https://your-server.com",
     port: 9453,
@@ -216,7 +218,20 @@ $translator = new LibreTranslate(
     ],
     format: "html",  # optional default format (null = auto-detect)
 );
-```
+
+### Overload-aware defaults
+
+For LTEngine behind the Smartech proxy, the server may respond with `429 Too Many Requests` and a `Retry-After` header when the GPU is saturated. The client now retries those transient failures automatically.
+
+```php
+$translator = new AsyncLibreTranslate("https://your-server.com", 9453);
+$translator->setMaxConcurrentRequests(4);
+$translator->setRetryPolicy(2, 2); # 2 retries, 2s fallback when Retry-After is missing
+````
+
+On a single RTX 3090, start with `4` concurrent requests and only raise it if the server remains stable.
+
+````
 
 ## Benchmark
 
@@ -242,8 +257,8 @@ php benchmark/benchmark.php https://your-server --port=9453 --auth=Basic:<base64
 php benchmark/benchmark.php http://localhost --test-cases=cases.json
 
 # Export results to JSON
-php benchmark/benchmark.php http://localhost --mode=async --workers=8 --export=results.json
-```
+php benchmark/benchmark.php http://localhost --mode=async --workers=4 --export=results.json
+````
 
 ### Options
 
@@ -252,7 +267,7 @@ php benchmark/benchmark.php http://localhost --mode=async --workers=8 --export=r
 | `--port=PORT`       | from URL | API port                       |
 | `--mode=MODE`       | `sync`   | `sync` or `async`              |
 | `--repeat=N`        | `10`     | Times to repeat all test cases |
-| `--workers=N`       | `8`      | Concurrency level (async mode) |
+| `--workers=N`       | `4`      | Concurrency level (async mode) |
 | `--source=LANG`     | `auto`   | Source language                |
 | `--target=LANG`     | `et`     | Target language                |
 | `--timeout=SECONDS` | `120`    | Request timeout                |

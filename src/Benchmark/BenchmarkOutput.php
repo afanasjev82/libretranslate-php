@@ -62,10 +62,21 @@ class BenchmarkOutput
 		echo \sprintf("Failed:               %d", $stats->failedRequests);
 
 		if ($stats->failedRequests > 0) {
-			echo \sprintf(" (%d net, %d validation)", $netFailures, $stats->validationFailures);
+			echo \sprintf(
+				" (%d net, %d validation, %d overload)",
+				$netFailures,
+				$stats->validationFailures,
+				$stats->overloadFailures,
+			);
 		}
 
 		echo "\n\n";
+		echo "Retries:\n";
+		echo \sprintf("  Attempts:           %d\n", $stats->retryAttempts);
+		echo \sprintf("  Recovered:          %d\n", $stats->recoveredAfterRetry);
+		echo \sprintf("  Exhausted:          %d\n", $stats->failedAfterRetries);
+		echo \sprintf("  Effectiveness:      %.1f%%\n", $stats->retryEffectiveness());
+		echo "\n";
 		echo "Timing:\n";
 		echo \sprintf("  Total Time:         %.3fs\n", $stats->totalTime);
 		echo \sprintf("  Requests/sec:       %.2f\n", $stats->requestsPerSecond());
@@ -96,6 +107,9 @@ class BenchmarkOutput
 		echo \str_repeat('-', 70) . "\n";
 		foreach ($failures as $r) {
 			$prefix = $r->validationFailure ? '[VALIDATION] ' : '';
+			if ($r->overloadFailure) {
+				$prefix = '[OVERLOAD] ';
+			}
 			echo \sprintf("  Request #%d: %s%s\n", $r->requestId, $prefix, $r->errorMessage);
 		}
 		echo \str_repeat('-', 70) . "\n";
@@ -146,7 +160,7 @@ Options:
   --port=PORT              API port (default: from URL)
   --mode=MODE              Execution mode: sync or async (default: sync)
   --repeat=N               Number of times to repeat all test cases (default: 10)
-  --workers=N              Concurrency level for async mode (default: 8)
+	--workers=N              Concurrency level for async mode (default: 4)
   --source=LANG            Default source language (default: auto)
   --target=LANG            Default target language (default: et)
   --timeout=SECONDS        Request timeout in seconds (default: 120)
@@ -165,8 +179,8 @@ Test case JSON format:
 
 Examples:
   php benchmark.php http://localhost:5000
-  php benchmark.php https://84.50.64.124 --port=9453 --mode=async --workers=24
-	php benchmark.php http://localhost --mode=async --repeat=100 --workers=24 --auth=Basic:<base64-credentials>
+	php benchmark.php https://84.50.64.124 --port=9453 --mode=async --workers=4
+	php benchmark.php http://localhost --mode=async --repeat=100 --workers=4 --auth=Basic:<base64-credentials>
   php benchmark.php http://localhost --test-cases=cases.json --export=results.json
 HELP;
 		echo $help . "\n";

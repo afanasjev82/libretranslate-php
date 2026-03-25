@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Afanasjev82\LibretranslatePhp;
 
+use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
 use RuntimeException;
@@ -21,6 +22,25 @@ use RuntimeException;
  */
 class AsyncLibreTranslate extends LibreTranslate
 {
+    /** @var int Maximum number of active async requests started by batch helpers */
+    protected int $maxConcurrentRequests = 4;
+
+    /**
+     * Set the max number of concurrent async requests dispatched by batch helpers.
+     *
+     * @return static
+     */
+    public function setMaxConcurrentRequests(int $maxConcurrentRequests): static
+    {
+        $this->maxConcurrentRequests = max(1, $maxConcurrentRequests);
+        return $this;
+    }
+
+    public function getMaxConcurrentRequests(): int
+    {
+        return $this->maxConcurrentRequests;
+    }
+
     /**
      * Translate text asynchronously (returns a Promise)
      *
@@ -45,19 +65,10 @@ class AsyncLibreTranslate extends LibreTranslate
             $format,
         );
 
-        $options = [
-            "headers" => $this->buildHeaders(),
-            "json" => $payload,
-        ];
-
         $isMulti = \is_array($text);
 
-        return $this->getClient()
-            ->postAsync("/translate", $options)
-            ->then(function ($response) use ($isMulti) {
-                $body = $response->getBody()->getContents();
-                $decoded = \json_decode($body);
-
+        return $this->doRequestAsync('/translate', $payload)
+            ->then(function ($decoded) use ($isMulti) {
                 if (\is_object($decoded) && isset($decoded->translatedText)) {
                     if ($isMulti) {
                         $result = $decoded->translatedText;
@@ -70,7 +81,7 @@ class AsyncLibreTranslate extends LibreTranslate
                 }
 
                 if (\is_object($decoded) && isset($decoded->error)) {
-                    throw new RuntimeException("Translation error: {$decoded->error}");
+                    throw new RuntimeException($this->buildApiErrorMessage((string) $decoded->error));
                 }
 
                 return null;
@@ -115,14 +126,26 @@ class AsyncLibreTranslate extends LibreTranslate
             return [];
         }
 
+        $laneCount = min(max(1, $this->maxConcurrentRequests), count($items));
+        $lanes = array_fill(0, $laneCount, Create::promiseFor(null));
         $promises = [];
+        $laneIndex = 0;
+
         foreach ($items as $index => $item) {
-            $promises[$index] = $this->translateAsync(
+            $currentLane = $laneIndex % $laneCount;
+            $requestPromise = $lanes[$currentLane]->then(fn() => $this->translateAsync(
                 $item["text"],
                 $item["source"] ?? null,
                 $item["target"] ?? null,
                 $item["format"] ?? null,
+            ));
+
+            $promises[$index] = $requestPromise;
+            $lanes[$currentLane] = $requestPromise->then(
+                static fn() => null,
+                static fn() => null,
             );
+            $laneIndex++;
         }
 
         return $promises;
@@ -222,11 +245,8 @@ class AsyncLibreTranslate extends LibreTranslate
                 "json" => $data,
             ];
 
-            $promises[$index] = $this->getClient()
-                ->postAsync("/detect", $options)
-                ->then(function ($response) {
-                    $body = $response->getBody()->getContents();
-                    $decoded = \json_decode($body);
+            $promises[$index] = $this->doRequestAsync('/detect', $data)
+                ->then(function ($decoded) {
                     return \is_array($decoded) ? $decoded : [];
                 });
         }
