@@ -67,7 +67,7 @@ class AsyncLibreTranslate extends LibreTranslate
 
         $isMulti = \is_array($text);
 
-        return $this->doRequestAsync('/translate', $payload)
+        return $this->doRequestAsync("/translate", $payload)
             ->then(function ($decoded) use ($isMulti) {
                 if (\is_object($decoded) && isset($decoded->translatedText)) {
                     if ($isMulti) {
@@ -180,7 +180,7 @@ class AsyncLibreTranslate extends LibreTranslate
      * translating product descriptions into all supported languages at once.
      *
      * Returns an associative array keyed by language code:
-     *   ['en' => 'Hello', 'et' => 'Tere', 'ru' => 'Привет', ...]
+     *   ["en" => "Hello", "et" => "Tere", "ru" => "Привет", ...]
      *
      * Failed translations return null for that language key.
      *
@@ -245,7 +245,7 @@ class AsyncLibreTranslate extends LibreTranslate
                 "json" => $data,
             ];
 
-            $promises[$index] = $this->doRequestAsync('/detect', $data)
+            $promises[$index] = $this->doRequestAsync("/detect", $data)
                 ->then(function ($decoded) {
                     return \is_array($decoded) ? $decoded : [];
                 });

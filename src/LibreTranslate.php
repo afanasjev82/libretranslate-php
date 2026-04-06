@@ -210,7 +210,7 @@ class LibreTranslate
         $this->maxRetries = max(0, $maxRetries);
         $this->retryAfterSeconds = max(0, $retryAfterSeconds);
         if ($retryStatusCodes !== null) {
-            $this->retryStatusCodes = array_values(array_map('intval', $retryStatusCodes));
+            $this->retryStatusCodes = array_values(array_map("intval", $retryStatusCodes));
         }
         return $this;
     }
@@ -223,9 +223,9 @@ class LibreTranslate
     public function getRetryPolicy(): array
     {
         return [
-            'max_retries' => $this->maxRetries,
-            'retry_after_seconds' => $this->retryAfterSeconds,
-            'retry_status_codes' => $this->retryStatusCodes,
+            "max_retries" => $this->maxRetries,
+            "retry_after_seconds" => $this->retryAfterSeconds,
+            "retry_status_codes" => $this->retryStatusCodes,
         ];
     }
 
@@ -237,9 +237,9 @@ class LibreTranslate
     public function getRetryStats(): array
     {
         return [
-            'retry_attempts' => $this->totalRetryAttempts,
-            'recovered_requests' => $this->recoveredRequests,
-            'failed_after_retries' => $this->failedAfterRetries,
+            "retry_attempts" => $this->totalRetryAttempts,
+            "recovered_requests" => $this->recoveredRequests,
+            "failed_after_retries" => $this->failedAfterRetries,
         ];
     }
 
@@ -575,7 +575,7 @@ class LibreTranslate
     protected function doRequestAsync(
         string $endpoint,
         array $data = [],
-        string $method = 'POST',
+        string $method = "POST",
         int $attempt = 0,
     ): PromiseInterface {
         $this->lastError = "";
@@ -606,7 +606,7 @@ class LibreTranslate
                 function ($reason) use ($endpoint, $data, $method, $attempt) {
                     $throwable = $reason instanceof \Throwable
                         ? $reason
-                        : new RuntimeException('Async request failed');
+                        : new RuntimeException("Async request failed");
 
                     if ($this->shouldRetryException($attempt)) {
                         $this->totalRetryAttempts++;
@@ -620,7 +620,7 @@ class LibreTranslate
 
                     $this->lastError = $throwable->getMessage();
                     throw new RuntimeException(
-                        'Request failed: ' . $throwable->getMessage(),
+                        "Request failed: " . $throwable->getMessage(),
                         (int) $throwable->getCode(),
                         $throwable,
                     );
@@ -635,10 +635,10 @@ class LibreTranslate
      * @param string $method
      * @return array<string, mixed>
      */
-    protected function buildRequestOptions(array $data = [], string $method = 'POST'): array
+    protected function buildRequestOptions(array $data = [], string $method = "POST"): array
     {
         $options = [
-            'headers' => $this->buildHeaders(),
+            "headers" => $this->buildHeaders(),
         ];
 
         if (empty($data)) {
@@ -646,11 +646,11 @@ class LibreTranslate
         }
 
         switch ($method) {
-            case 'POST':
-                $options['json'] = $data;
+            case "POST":
+                $options["json"] = $data;
                 break;
-            case 'GET':
-                $options['query'] = $data;
+            case "GET":
+                $options["query"] = $data;
                 break;
             default:
                 throw new RuntimeException("Unsupported HTTP method: {$method}");
@@ -670,28 +670,49 @@ class LibreTranslate
         $body = $response->getBody()->getContents();
         $decoded = \json_decode($body);
 
-        if ($decoded === null && $body !== '' && $body !== 'null') {
-            $this->lastError = 'Failed to decode JSON response';
-            throw new RuntimeException('Failed to decode JSON response: ' . \substr($body, 0, 200));
+        if ($decoded === null && $body !== "" && $body !== "null") {
+            $this->lastError = "Failed to decode JSON response";
+            throw new RuntimeException("Failed to decode JSON response: " . \substr($body, 0, 200));
         }
 
         return $decoded;
     }
 
+    /**
+     * Determine if a response should be retried based on the status code and attempt count.
+     *
+     * @param ResponseInterface $response HTTP response to evaluate
+     * @param int $attempt Current retry attempt number (0 = initial request)
+     * @return bool True if the request should be retried, false otherwise
+     */
     protected function shouldRetryResponse(ResponseInterface $response, int $attempt): bool
     {
         if ($attempt >= $this->maxRetries) {
             return false;
         }
 
-        return in_array($response->getStatusCode(), $this->retryStatusCodes, true);
+        return \in_array($response->getStatusCode(), $this->retryStatusCodes, true);
     }
 
+    /**
+     * Determine if an exception should trigger a retry based on the attempt count.
+     *
+     * @param int $attempt Current retry attempt number (0 = initial request)
+     * @return bool True if the request should be retried, false otherwise
+     */
     protected function shouldRetryException(int $attempt): bool
     {
         return $attempt < $this->maxRetries;
     }
 
+    /**
+     * Sleep for the appropriate amount of time before retrying a request.
+     *
+     * Uses the Retry-After header if available, otherwise falls back to an exponential backoff strategy.
+     *
+     * @param ResponseInterface|null $response The HTTP response that triggered the retry (may be null for exceptions)
+     * @param int $attempt Current retry attempt number (0 = initial request)
+     */
     protected function sleepForRetry(?ResponseInterface $response, int $attempt): void
     {
         $delaySeconds = $this->getRetryDelaySeconds($response, $attempt);
@@ -700,9 +721,16 @@ class LibreTranslate
         }
     }
 
+    /**
+     * Calculate the delay in seconds before the next retry attempt.
+     *
+     * @param ResponseInterface|null $response The HTTP response that triggered the retry (may be null for exceptions)
+     * @param int $attempt Current retry attempt number (0 = initial request)
+     * @return int Delay in seconds before the next retry
+     */
     protected function getRetryDelaySeconds(?ResponseInterface $response, int $attempt): int
     {
-        $headerValue = $response?->getHeaderLine('Retry-After');
+        $headerValue = $response?->getHeaderLine("Retry-After") ?? "";
         $headerDelay = $this->parseRetryAfterSeconds($headerValue);
         if ($headerDelay !== null) {
             return min($this->maxRetryAfterSeconds, max(0, $headerDelay));
@@ -712,10 +740,18 @@ class LibreTranslate
         return min($this->maxRetryAfterSeconds, max(0, $fallback));
     }
 
+    /**
+     * Parse the Retry-After header value to determine the delay in seconds.
+     *
+     * The Retry-After header can be either an integer number of seconds or an HTTP date.
+     *
+     * @param string $headerValue The value of the Retry-After header
+     * @return int|null The delay in seconds, or null if the header is invalid or empty
+     */
     protected function parseRetryAfterSeconds(string $headerValue): ?int
     {
         $trimmed = trim($headerValue);
-        if ($trimmed === '') {
+        if ($trimmed === "") {
             return null;
         }
 
@@ -731,6 +767,12 @@ class LibreTranslate
         return max(0, $timestamp - time());
     }
 
+    /**
+     * Build a detailed error message for API errors, including HTTP status code if available.
+     *
+     * @param string $errorMessage The error message from the API response
+     * @return string Formatted error message with status code context
+     */
     protected function buildApiErrorMessage(string $errorMessage): string
     {
         if ($this->lastStatusCode !== null) {
