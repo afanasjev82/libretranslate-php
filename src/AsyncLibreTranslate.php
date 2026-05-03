@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace Afanasjev82\LibretranslatePhp;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\CurlMultiHandler;
+use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
@@ -26,6 +29,17 @@ class AsyncLibreTranslate extends LibreTranslate
     protected int $maxConcurrentRequests = 4;
 
     /**
+     * curl_multi_select timeout in seconds used by the CurlMultiHandler.
+     * 0.0 (default) = non-blocking; pump() returns immediately after draining
+     * whatever is ready. Set to 1.0 to restore the Guzzle default if you want
+     * the handler's wait loop to sleep between polls.
+     */
+    protected float $selectTimeout = 0.0;
+
+    /** @var CurlMultiHandler|null Handler reference retained for pump(); null when a custom handler was injected (e.g. test mocks) */
+    private ?CurlMultiHandler $multiHandler = null;
+
+    /**
      * Set the max number of concurrent async requests dispatched by batch helpers.
      *
      * @return static
@@ -39,6 +53,103 @@ class AsyncLibreTranslate extends LibreTranslate
     public function getMaxConcurrentRequests(): int
     {
         return $this->maxConcurrentRequests;
+    }
+
+    /**
+     * Set the curl_multi_select timeout used by the internal CurlMultiHandler.
+     *
+     * The default (0.0 s) makes pump() non-blocking: it drains whatever is
+     * ready without waiting for sockets, so you can call it freely between
+     * DB writes without introducing artificial delays.
+     *
+     * Pass 1.0 to restore Guzzle's default if you need the event loop to sleep
+     * between polls (e.g. long-polling scenarios outside a pipelined batch).
+     *
+     * Note: changing this after construction rebuilds the Guzzle client.
+     * Call before the first request for best results.
+     *
+     * @return static
+     */
+    public function setSelectTimeout(float $seconds): static
+    {
+        $this->selectTimeout = max(0.0, $seconds);
+        $this->multiHandler = null;
+        $this->client = $this->createClient();
+        return $this;
+    }
+
+    public function getSelectTimeout(): float
+    {
+        return $this->selectTimeout;
+    }
+
+    /**
+     * Override the base createClient() to install a CurlMultiHandler with the
+     * configured select_timeout and retain a reference for pump().
+     *
+     * If a custom handler was already provided in guzzleOptions (e.g. a test
+     * MockHandler), that handler is used as-is and multiHandler is left null,
+     * so pump() degrades gracefully to queue-drain only.
+     */
+    protected function createClient(): Client
+    {
+        $baseUri = $this->apiBase . ($this->apiPort !== null ? ":" . $this->apiPort : "");
+
+        if (isset($this->defaultOptions["handler"])) {
+            # Custom handler injected (e.g. test mock) — do not override it.
+            return new Client([...$this->defaultOptions, "base_uri" => $baseUri]);
+        }
+
+        $this->multiHandler = new CurlMultiHandler(["select_timeout" => $this->selectTimeout]);
+        $stack = HandlerStack::create($this->multiHandler);
+
+        return new Client([
+            ...$this->defaultOptions,
+            "base_uri" => $baseUri,
+            "handler" => $stack,
+        ]);
+    }
+
+    /**
+     * Step the async pipeline forward without blocking.
+     *
+     * Two things happen on each call:
+     *  1. Guzzle's global task queue is drained — this fires any deferred
+     *     then() callbacks that startAsyncBatch() queued (including the
+     *     translateAsync() calls themselves), registering their cURL handles
+     *     with curl_multi.
+     *  2. The CurlMultiHandler is ticked once — this sends pending request
+     *     data on the wire and reads any completed responses, advancing
+     *     in-flight promises toward resolution.
+     *
+     * With the default select_timeout of 0.0 the tick is fully non-blocking:
+     * it processes whatever the kernel has ready (sockets readable/writable)
+     * and returns immediately, so pump() is safe to call from a tight loop or
+     * from a DB-save progress callback without introducing delays.
+     *
+     * When a test mock handler is configured the curl tick is skipped, but the
+     * queue drain still runs — pump() is safe to call in tests.
+     *
+     * Typical pipelined usage:
+     *
+     *   $next = $client->startAsyncBatch($nextItems);
+     *   foreach ($previousResults as $i => $r) {
+     *       $db->save($items[$i]["id"], $r);
+     *       $client->pump();   // keep LTEngine busy while saving
+     *   }
+     *   $results = $client->resolveAsyncBatch($next);
+     */
+    public function pump(): void
+    {
+        # Drain deferred then() callbacks — fires translateAsync() calls and
+        # registers cURL handles that startAsyncBatch() queued.
+        Utils::queue()->run();
+
+        # Step curl_multi once. Non-blocking at select_timeout=0.0: sends
+        # buffered data and reads completed responses without waiting.
+        if ($this->multiHandler !== null) {
+            $this->multiHandler->tick();
+        }
     }
 
     /**

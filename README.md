@@ -8,6 +8,30 @@ Forked from [jefs42/libretranslate](https://github.com/jefs42/libretranslate), r
 
 When translating the same content into multiple languages (e.g. en, et, ru, lt, lv, fi), sequential requests are slow. LTEngine uses [vLLM](https://docs.vllm.ai/) with **continuous batching**, but consumer GPUs still need bounded concurrency. This client keeps async batches efficient while respecting server overload signals such as `429 Retry-After`.
 
+## Translation modes
+
+| Mode                | Method(s)                                              | Blocks caller?                             | Best for                                              |
+| ------------------- | ------------------------------------------------------ | ------------------------------------------ | ----------------------------------------------------- |
+| **Sync single**     | `translate()`                                          | Yes — one blocking POST                    | One-off translates, admin forms                       |
+| **Sync multi**      | `translate(['a','b',...])`                             | Yes — one blocking POST with array payload | Small fixed sets                                      |
+| **Async batch**     | `translateBatch()`                                     | Yes — blocks until all done                | Many texts, no per-result side effects                |
+| **Pipelined async** | `startAsyncBatch()` + `pump()` + `resolveAsyncBatch()` | Only at `resolve()`                        | **Maximum throughput** — keeps GPU busy during DB I/O |
+
+### The GPU-idle problem and how pump() solves it
+
+`startAsyncBatch()` parks each request inside a deferred `then()` chain on Guzzle's **global task queue**. Until something calls `PromiseUtils::queue()->run()` (which `wait()` does internally), those callbacks have not fired — so `requestAsync()` has not even registered the cURL handle yet. Meanwhile responses already in the kernel buffer are not read because nobody is calling `curl_multi_exec`.
+
+Result: LTEngine GPU goes idle between batches.
+
+`pump()` fixes both in one non-blocking call:
+
+```
+PromiseUtils::queue()->run();   // fire deferred then() → register cURL handles
+$multiHandler->tick();          // step curl_multi once → send data, read responses
+```
+
+With the default `selectTimeout=0.0` the tick is fully non-blocking — safe to call from a save callback or a tight loop.
+
 ## Changes from jefs42/libretranslate
 
 | Issue                                                                                          | Fix                                                                       |
@@ -150,11 +174,20 @@ $result = $promise->wait(); # Block when ready
 echo $result; # "Tere maailm"
 ```
 
-### Pipelined batch (overlap DB writes with HTTP requests)
+### Pipelined async with pump() (maximum GPU throughput)
 
-`startAsyncBatch()` dispatches requests without blocking, but respects the client's max-concurrency setting so it does not flood LTEngine. `resolveAsyncBatch()` blocks when you need the results. Use them together to keep vLLM busy while you write the previous batch to the database:
+`startAsyncBatch()` dispatches requests without blocking. `resolveAsyncBatch()` blocks when you need the results. Call `pump()` between the two to keep LTEngine busy while your code does I/O (database writes, file saves, etc.):
 
 ```php
+use Afanasjev82\LibretranslatePhp\AsyncLibreTranslate;
+
+$translator = new AsyncLibreTranslate("https://your-server.com", 9453);
+$translator->setAuth("Basic", "base64encodedcredentials");
+$translator->setMaxConcurrentRequests(4);
+# selectTimeout defaults to 0.0 s — pump() is non-blocking out of the box.
+# Restore Guzzle default (1.0 s) if you need a sleeping event loop instead:
+# $translator->setSelectTimeout(1.0);
+
 $batches = array_chunk($items, 20);
 $pendingPromises = null;
 $pendingBatch    = null;
@@ -166,7 +199,7 @@ foreach ($batches as $batch) {
         "target" => $item["lang"],
     ], $batch);
 
-    # Dispatch next batch — non-blocking, requests fire immediately
+    # Dispatch next batch — non-blocking, requests start flowing immediately
     $newPromises = $translator->startAsyncBatch($batchItems);
 
     # Save previous batch to DB while new requests are in flight
@@ -174,6 +207,7 @@ foreach ($batches as $batch) {
         $results = $translator->resolveAsyncBatch($pendingPromises);
         foreach ($pendingBatch as $index => $item) {
             $db->save($item["id"], $results[$index]);
+            $translator->pump(); # keep LTEngine busy while we write to DB
         }
     }
 
@@ -190,7 +224,7 @@ if ($pendingPromises !== null) {
 }
 ```
 
-This eliminates the idle gap between batches — vLLM sees a continuous stream of requests instead of burst → pause → burst.
+This eliminates the idle gap between batches — vLLM sees a continuous stream of requests instead of burst → pause → burst. A worked example with fake DB saves is in [`examples/pipelined-batch.php`](examples/pipelined-batch.php).
 
 ### Async detect batch
 
@@ -304,7 +338,7 @@ src/
 ```
 
 - `LibreTranslate` — synchronous client compatible with both LibreTranslate and LTEngine APIs; format auto-detected per-call via regex, overridable via constructor, `setFormat()`, or per-call parameter
-- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, `detectBatch()`, `startAsyncBatch()`, and `resolveAsyncBatch()` methods using `GuzzleHttp\Promise\Utils::unwrap()`; the `start`/`resolve` split enables pipelining (overlap DB writes with HTTP dispatch); format resolution applies to all async paths
+- `AsyncLibreTranslate` — extends base class with `translateAsync()`, `translateBatch()`, `translateMultiTarget()`, `detectBatch()`, `startAsyncBatch()`, `resolveAsyncBatch()`, and `pump()` methods; installs a `CurlMultiHandler` with `selectTimeout=0.0` by default so `pump()` is non-blocking out of the box; `setSelectTimeout()` restores the Guzzle default (1.0 s) when needed
 
 ## LTEngine API
 

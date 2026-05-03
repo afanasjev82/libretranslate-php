@@ -4,10 +4,12 @@ declare(strict_types=1);
 namespace Afanasjev82\LibretranslatePhp\Tests;
 
 use Afanasjev82\LibretranslatePhp\AsyncLibreTranslate;
+use GuzzleHttp\Handler\CurlMultiHandler;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Promise\Utils;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;
 
@@ -629,5 +631,164 @@ final class AsyncLibreTranslateTest extends TestCase
         $body1 = \json_decode($history[1]["request"]->getBody()->getContents(), true);
         $this->assertSame("html", $body0["format"]);
         $this->assertSame("html", $body1["format"]);
+    }
+
+    # ──────────────────────────────────────────────
+    # pump() / CurlMultiHandler / selectTimeout
+    # ──────────────────────────────────────────────
+
+    /**
+     * When no custom handler is injected, AsyncLibreTranslate must install
+     * a CurlMultiHandler internally so that pump() can tick it.
+     */
+    public function testCreateClientInstallsCurlMultiHandlerWhenNoCustomHandlerProvided(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+
+        $ref = new \ReflectionProperty($translator, "multiHandler");
+        $ref->setAccessible(true);
+
+        $this->assertInstanceOf(CurlMultiHandler::class, $ref->getValue($translator));
+    }
+
+    /**
+     * When a custom handler is injected (e.g. test mock), multiHandler must
+     * stay null so pump() degrades gracefully and the mock is not replaced.
+     */
+    public function testCreateClientDoesNotOverrideCustomHandler(): void
+    {
+        $translator = $this->makeTranslator([]); # injects a MockHandler via guzzleOptions
+
+        $ref = new \ReflectionProperty($translator, "multiHandler");
+        $ref->setAccessible(true);
+
+        $this->assertNull($ref->getValue($translator));
+    }
+
+    /**
+     * Default selectTimeout must be 0.0 (non-blocking).
+     */
+    public function testSelectTimeoutDefaultIsZero(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+        $this->assertSame(0.0, $translator->getSelectTimeout());
+    }
+
+    /**
+     * setSelectTimeout() stores the value, rebuilds the client, and is fluent.
+     */
+    public function testSetSelectTimeoutStoresValueAndReturnsStatic(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+
+        $returned = $translator->setSelectTimeout(1.0);
+
+        $this->assertSame($translator, $returned);
+        $this->assertSame(1.0, $translator->getSelectTimeout());
+    }
+
+    /**
+     * Negative values must be clamped to 0.0.
+     */
+    public function testSetSelectTimeoutClampsNegativeToZero(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+        $translator->setSelectTimeout(-5.0);
+        $this->assertSame(0.0, $translator->getSelectTimeout());
+    }
+
+    /**
+     * pump() must drain Guzzle's global task queue.
+     *
+     * Guzzle's deferred task queue is global state. startAsyncBatch() parks
+     * its lane then() chains there; without pump() (or wait()), those callbacks
+     * never fire and the HTTP requests are never actually dispatched.
+     *
+     * This test adds a sentinel directly to the queue and verifies that a
+     * single pump() call drains it — without any network I/O.
+     */
+    public function testPumpDrainsGlobalTaskQueue(): void
+    {
+        $ran = false;
+        Utils::queue()->add(static function () use (&$ran): void {
+            $ran = true;
+        });
+
+        $this->assertFalse($ran, "Sentinel should not have run before pump()");
+
+        # makeTranslator injects a mock handler, so no real HTTP happens;
+        # multiHandler is null, but queue drain still runs.
+        $translator = $this->makeTranslator([]);
+        $translator->pump();
+
+        $this->assertTrue($ran, "pump() must drain the global task queue");
+    }
+
+    /**
+     * pump() must call tick() on the CurlMultiHandler when one is installed.
+     *
+     * We verify this via reflection by confirming multiHandler is non-null
+     * and that pump() does not throw when no transfers are in flight.
+     */
+    public function testPumpTicksCurlMultiHandlerWithoutThrowing(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+
+        $ref = new \ReflectionProperty($translator, "multiHandler");
+        $ref->setAccessible(true);
+
+        $this->assertInstanceOf(
+            CurlMultiHandler::class,
+            $ref->getValue($translator),
+            "CurlMultiHandler must be installed when no custom handler provided"
+        );
+
+        # Should not throw even with no in-flight requests
+        $translator->pump();
+        $this->assertTrue(true); # reached = no exception thrown
+    }
+
+    /**
+     * pump() must be a no-op (no exception) when called with a mock handler
+     * (multiHandler is null), and the queue drain path still runs safely.
+     */
+    public function testPumpIsNoOpForCurlTickWhenMockHandlerInjected(): void
+    {
+        $ran = false;
+        Utils::queue()->add(static function () use (&$ran): void {
+            $ran = true;
+        });
+
+        $translator = $this->makeTranslator([]);
+        $translator->pump(); # must not throw
+
+        $this->assertTrue($ran, "Queue drain must still run even without CurlMultiHandler");
+    }
+
+    /**
+     * setSelectTimeout() must rebuild the client and update the CurlMultiHandler
+     * with the new select_timeout value.
+     */
+    public function testSetSelectTimeoutRebuildsClientWithNewHandler(): void
+    {
+        $translator = new AsyncLibreTranslate("http://localhost");
+
+        $ref = new \ReflectionProperty($translator, "multiHandler");
+        $ref->setAccessible(true);
+
+        $handlerBefore = $ref->getValue($translator);
+        $this->assertInstanceOf(CurlMultiHandler::class, $handlerBefore);
+
+        $translator->setSelectTimeout(1.0);
+
+        $handlerAfter = $ref->getValue($translator);
+        $this->assertInstanceOf(CurlMultiHandler::class, $handlerAfter);
+
+        # A new handler instance must have been created
+        $this->assertNotSame(
+            $handlerBefore,
+            $handlerAfter,
+            "setSelectTimeout() must rebuild the CurlMultiHandler"
+        );
     }
 }
